@@ -1,0 +1,98 @@
+name: Rust CI
+
+on:
+  workflow_call:
+    inputs:
+      rust-version:
+        description: "Rust version (default: stable)"
+        type: string
+        default: "stable"
+      check-fmt:
+        description: "Run cargo fmt --check"
+        type: boolean
+        default: true
+      run-clippy:
+        description: "Run clippy linter"
+        type: boolean
+        default: true
+      run-tests:
+        description: "Run cargo test"
+        type: boolean
+        default: true
+      publish-check:
+        description: "Run cargo publish --dry-run"
+        type: boolean
+        default: true
+      main-pr-checks:
+        description: "Validate version bump on main PR"
+        type: boolean
+        default: true
+
+jobs:
+  check:
+    name: Format, Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Check formatting
+        if: inputs.check-fmt
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        if: inputs.run-clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        if: inputs.run-tests
+        run: cargo test --all-features
+
+  publish-check:
+    name: Publish Check
+    if: inputs.publish-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Dry-run publish
+        run: cargo publish --dry-run
+
+  main-pr-checks:
+    name: Main PR Version Bump
+    if: >-
+      inputs.main-pr-checks &&
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version bump
+        run: |
+          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "//' | sed 's/".*//')
+          BASE_VERSION=$(git show origin/main:Cargo.toml | grep '^version' | head -1 | sed 's/version = "//' | sed 's/".*//')
+
+          if [ "$CURRENT_VERSION" = "$BASE_VERSION" ]; then
+            echo "❌ Version in Cargo.toml must be bumped for main PR"
+            exit 1
+          fi
+          echo "✅ Version bumped: $BASE_VERSION → $CURRENT_VERSION"
