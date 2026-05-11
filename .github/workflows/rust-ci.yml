@@ -7,6 +7,10 @@ on:
         description: "Rust version (default: stable)"
         type: string
         default: "stable"
+      system-packages:
+        description: "Space-separated system packages to install (e.g., 'protobuf-compiler libssl-dev')"
+        type: string
+        default: ""
       check-fmt:
         description: "Run cargo fmt --check"
         type: boolean
@@ -40,6 +44,12 @@ jobs:
           toolchain: ${{ inputs.rust-version }}
           components: rustfmt, clippy
 
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -66,6 +76,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ inputs.rust-version }}
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
 
       - uses: Swatinem/rust-cache@v2
         with:
