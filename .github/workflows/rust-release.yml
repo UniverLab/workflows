@@ -7,6 +7,14 @@ on:
         description: "Binary/crate name (e.g. texforge, gitkit)"
         type: string
         required: true
+      system-packages:
+        description: "Space-separated apt packages to install before building (e.g. 'protobuf-compiler libssl-dev')"
+        type: string
+        default: ""
+      include-windows:
+        description: "Build and release a native Windows (x86_64-pc-windows-msvc) binary"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -80,39 +88,57 @@ jobs:
             os: windows-latest
             archive: zip
     steps:
+      - if: matrix.os == 'windows-latest' && !inputs.include-windows
+        name: Skip Windows build
+        run: |
+          echo "Windows build disabled via include-windows: false — skipping"
+          exit 0
+        shell: bash
+
       - uses: actions/checkout@v4
+        if: matrix.os != 'windows-latest' || inputs.include-windows
         with:
           ref: ${{ needs.create-tag.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.os != 'windows-latest' || inputs.include-windows
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install system packages
+        if: (matrix.os != 'windows-latest' || inputs.include-windows) && runner.os == 'Linux' && inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
       - name: Install musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+        if: (matrix.os != 'windows-latest' || inputs.include-windows) && matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - uses: Swatinem/rust-cache@v2
+        if: matrix.os != 'windows-latest' || inputs.include-windows
         with:
           cache-on-failure: true
 
       - name: Build
+        if: matrix.os != 'windows-latest' || inputs.include-windows
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (unix)
-        if: matrix.archive == 'tar.gz'
+        if: (matrix.os != 'windows-latest' || inputs.include-windows) && matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
           tar czf "../../../${{ inputs.binary-name }}-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.tar.gz" ${{ inputs.binary-name }}
 
       - name: Package (windows)
-        if: matrix.archive == 'zip'
+        if: inputs.include-windows && matrix.archive == 'zip'
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
           Compress-Archive -Path ${{ inputs.binary-name }}.exe -DestinationPath "../../../${{ inputs.binary-name }}-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.zip"
 
       - name: Upload artifact
+        if: matrix.os != 'windows-latest' || inputs.include-windows
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.binary-name }}-${{ matrix.target }}
@@ -177,6 +203,12 @@ jobs:
           ref: ${{ needs.create-tag.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
 
       - name: Check stable version
         id: version_check
