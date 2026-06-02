@@ -1,0 +1,69 @@
+name: Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version (default: 3.11)"
+        type: string
+        default: "3.11"
+      system-packages:
+        description: "Space-separated system packages to install (e.g., 'libfftw3-dev')"
+        type: string
+        default: ""
+      check-format:
+        description: "Run ruff format --check"
+        type: boolean
+        default: true
+      run-lint:
+        description: "Run ruff check"
+        type: boolean
+        default: true
+      run-typecheck:
+        description: "Run mypy type checking"
+        type: boolean
+        default: true
+      run-tests:
+        description: "Run pytest"
+        type: boolean
+        default: true
+
+jobs:
+  check:
+    name: Format, Lint, TypeCheck & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Check formatting
+        if: inputs.check-format
+        run: uv run ruff format --check .
+
+      - name: Run linter
+        if: inputs.run-lint
+        run: uv run ruff check .
+
+      - name: Run type checker
+        if: inputs.run-typecheck
+        run: uv run mypy src/
+
+      - name: Run tests
+        if: inputs.run-tests
+        run: uv run pytest -v
