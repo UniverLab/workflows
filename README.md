@@ -26,6 +26,14 @@ This repository centralizes CI/CD logic, reducing duplication across projects. E
 
 **Consumer usage:** See [Integration Guide](#integration-guide) below.
 
+### Python
+
+**Files:**
+- `.github/workflows/python-ci.yml` — Continuous integration (format, lint, typecheck, test)
+- `.github/workflows/python-publish.yml` — Publish to PyPI via trusted publishing
+
+**Consumer usage:** See [Python Integration](#python-integration) below.
+
 ---
 
 ## Integration Guide
@@ -71,6 +79,41 @@ jobs:
 ### Same pattern for: gitkit, ghscaff
 
 Only change: `binary-name: gitkit` / `binary-name: ghscaff`
+
+### Python Integration
+
+**`.github/workflows/ci.yml`** (~9 lines):
+```yaml
+name: CI
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-ci:
+    uses: UniverLab/workflows/.github/workflows/python-ci.yml@main
+```
+
+**`.github/workflows/publish.yml`** (~15 lines):
+```yaml
+name: Publish
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+    paths: [pyproject.toml]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    uses: UniverLab/workflows/.github/workflows/python-publish.yml@main
+    with:
+      package-name: my-package
+    secrets: inherit
+```
+
+**Setup secrets:** Each repo needs `PYPI_API_TOKEN` configured (GitHub Settings → Secrets). The `secrets: inherit` passes it to the workflow. Also configure a `pypi` environment for deployment protection.
 
 ---
 
