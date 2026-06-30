@@ -128,7 +128,7 @@ jobs:
 
       - name: Build
         if: matrix.os != 'windows-latest' || inputs.include-windows
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: (matrix.os != 'windows-latest' || inputs.include-windows) && matrix.archive == 'tar.gz'
@@ -161,6 +161,13 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # One checksum file users (and the install scripts) can verify against.
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -231,4 +238,4 @@ jobs:
         if: steps.version_check.outputs.is_stable == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --allow-dirty
+        run: cargo publish --locked --allow-dirty
