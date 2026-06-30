@@ -28,6 +28,15 @@ on:
         type: boolean
         default: true
 
+# CI only reads the checkout — least privilege.
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes in-flight CI; cancel the stale run.
+concurrency:
+  group: python-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Format, Lint, TypeCheck & Test

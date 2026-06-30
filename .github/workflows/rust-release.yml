@@ -19,6 +19,12 @@ on:
 permissions:
   contents: write
 
+# Serialize releases per caller repo — never cancel a release mid-flight, but
+# don't let two run at once and race on tag/publish.
+concurrency:
+  group: rust-release-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
