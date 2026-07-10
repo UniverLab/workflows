@@ -27,10 +27,28 @@ on:
         description: "Run cargo publish --dry-run"
         type: boolean
         default: true
+      run-coverage:
+        description: "Measure test coverage with cargo-llvm-cov"
+        type: boolean
+        default: true
+      coverage-threshold:
+        description: "Fail if line coverage drops below this percent (0 = report only)"
+        type: number
+        default: 0
       main-pr-checks:
         description: "Validate version bump on main PR"
         type: boolean
         default: true
+
+# CI only reads the checkout — least privilege. Release/publish workflows
+# request write where they actually need it.
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes in-flight CI; cancel the stale run.
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -39,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ inputs.rust-version }}
           components: rustfmt, clippy
@@ -60,11 +78,11 @@ jobs:
 
       - name: Run clippy
         if: inputs.run-clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
         if: inputs.run-tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
 
   publish-check:
     name: Publish Check
@@ -73,7 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ inputs.rust-version }}
 
@@ -88,7 +106,38 @@ jobs:
           cache-on-failure: true
 
       - name: Dry-run publish
-        run: cargo publish --dry-run
+        run: cargo publish --locked --dry-run
+
+  coverage:
+    name: Coverage
+    if: inputs.run-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.rust-version }}
+          components: llvm-tools-preview
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # --fail-under-lines 0 is a pure report; pass coverage-threshold to gate.
+      - name: Measure coverage
+        run: |
+          cargo llvm-cov --locked --all-features \
+            --fail-under-lines ${{ inputs.coverage-threshold }} \
+            --summary-only
 
   main-pr-checks:
     name: Main PR Version Bump

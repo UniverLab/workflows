@@ -19,6 +19,12 @@ on:
 permissions:
   contents: read
 
+# Serialize publishes per caller repo — never cancel mid-flight, but don't let
+# two run at once and race on the PyPI upload.
+concurrency:
+  group: python-publish-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build package
