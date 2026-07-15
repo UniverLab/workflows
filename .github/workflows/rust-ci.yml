@@ -34,7 +34,7 @@ on:
       coverage-threshold:
         description: "Fail if line coverage drops below this percent (0 = report only)"
         type: number
-        default: 0
+        default: 80
       main-pr-checks:
         description: "Validate version bump on main PR"
         type: boolean
