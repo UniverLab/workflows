@@ -11,6 +11,10 @@ on:
         description: "Space-separated apt packages to install before building (e.g. 'protobuf-compiler libssl-dev')"
         type: string
         default: ""
+      system-packages-brew:
+        description: "Space-separated Homebrew formulae for the macOS build targets (e.g. 'protobuf'). Kept separate from system-packages because the names rarely match across package managers — protobuf-compiler on apt is protobuf on brew."
+        type: string
+        default: ""
       include-windows:
         description: "Build and release a native Windows (x86_64-pc-windows-msvc) binary"
         type: boolean
@@ -116,6 +120,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ inputs.system-packages }}
+
+      # The macOS runners get no build dependencies at all without this. A crate
+      # that needs protoc builds on Linux and fails on darwin, and only at
+      # release time, since CI itself is Linux-only.
+      - name: Install system packages (macOS)
+        if: (matrix.os != 'windows-latest' || inputs.include-windows) && runner.os == 'macOS' && inputs.system-packages-brew != ''
+        run: brew install ${{ inputs.system-packages-brew }}
 
       - name: Install musl tools
         if: (matrix.os != 'windows-latest' || inputs.include-windows) && matrix.target == 'x86_64-unknown-linux-musl'
