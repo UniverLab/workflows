@@ -31,10 +31,18 @@ on:
         description: "Fail publish-check if the packaged .crate exceeds this size. Defaults to 9, one under the 10 MiB crates.io enforces, so a PR fails with headroom instead of at the cliff."
         type: number
         default: 9
+      feature-flags:
+        description: "Cargo feature selection for clippy, tests and coverage. Defaults to --all-features. Set to an empty string for default features, or to '--features a,b' — needed when an optional feature pulls a native dependency the runners do not carry."
+        type: string
+        default: "--all-features"
       run-coverage:
         description: "Measure test coverage with cargo-llvm-cov"
         type: boolean
         default: true
+      coverage-ignore-regex:
+        description: "Optional --ignore-filename-regex for coverage, to keep code whose correctness is not logical (e.g. pure rendering) out of the gate. Matched against full paths, so do not anchor with ^."
+        type: string
+        default: ""
       coverage-threshold:
         description: "Fail if line coverage drops below this percent (0 = report only)"
         type: number
@@ -82,11 +90,11 @@ jobs:
 
       - name: Run clippy
         if: inputs.run-clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets ${{ inputs.feature-flags }} -- -D warnings
 
       - name: Run tests
         if: inputs.run-tests
-        run: cargo test --locked --all-features
+        run: cargo test --locked ${{ inputs.feature-flags }}
 
   publish-check:
     name: Publish Check
@@ -167,8 +175,14 @@ jobs:
 
       # --fail-under-lines 0 is a pure report; pass coverage-threshold to gate.
       - name: Measure coverage
+        env:
+          IGNORE_REGEX: ${{ inputs.coverage-ignore-regex }}
         run: |
-          cargo llvm-cov --locked --all-features \
+          ignore=""
+          if [ -n "$IGNORE_REGEX" ]; then
+            ignore="--ignore-filename-regex $IGNORE_REGEX"
+          fi
+          cargo llvm-cov --locked ${{ inputs.feature-flags }} $ignore \
             --fail-under-lines ${{ inputs.coverage-threshold }} \
             --summary-only
 
