@@ -27,6 +27,10 @@ on:
         description: "Run cargo publish --dry-run"
         type: boolean
         default: true
+      max-package-mib:
+        description: "Fail publish-check if the packaged .crate exceeds this size. Defaults to 9, one under the 10 MiB crates.io enforces, so a PR fails with headroom instead of at the cliff."
+        type: number
+        default: 9
       run-coverage:
         description: "Measure test coverage with cargo-llvm-cov"
         type: boolean
@@ -107,6 +111,35 @@ jobs:
 
       - name: Dry-run publish
         run: cargo publish --locked --dry-run
+
+      # The dry run packages and verifies locally but never uploads, and the
+      # size ceiling only exists server-side — so a green dry run says nothing
+      # about whether the publish will fit. crates.io does not reject an
+      # oversized upload cleanly either: it resets the HTTP/2 stream, which
+      # reads like a network fault. Measure the .crate the dry run already
+      # produced and fail here, where the log can name the offending file.
+      - name: Check package size
+        run: |
+          crate=$(ls -1 target/package/*.crate 2>/dev/null | head -1)
+          if [ -z "$crate" ]; then
+            echo "No .crate produced by the dry run — nothing to measure."
+            exit 0
+          fi
+          size=$(stat -c%s "$crate")
+          limit=$(( ${{ inputs.max-package-mib }} * 1024 * 1024 ))
+          printf 'Package: %s\nSize:    %s bytes (%.2f MiB)\nLimit:   %s MiB\n' \
+            "$crate" "$size" "$(echo "$size" | awk '{print $1/1048576}')" \
+            "${{ inputs.max-package-mib }}"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::Package exceeds ${{ inputs.max-package-mib }} MiB; crates.io rejects uploads over 10 MiB."
+            echo "Largest files in the package:"
+            cargo package --locked --list --allow-dirty 2>/dev/null \
+              | while read -r f; do
+                  [ -f "$f" ] && printf '%10s  %s\n' "$(stat -c%s "$f")" "$f"
+                done | sort -rn | head -10
+            echo "Fix: add an 'exclude' list to Cargo.toml so assets stay out of the package."
+            exit 1
+          fi
 
   coverage:
     name: Coverage
