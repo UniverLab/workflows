@@ -35,6 +35,10 @@ on:
         description: "Cargo feature selection for clippy, tests and coverage. Defaults to --all-features. Set to an empty string for default features, or to '--features a,b' — needed when an optional feature pulls a native dependency the runners do not carry."
         type: string
         default: "--all-features"
+      use-nextest:
+        description: "Run tests and coverage with cargo-nextest instead of cargo test. nextest runs each test in its own process, so tests that touch process-global state (env vars, current dir, signal handlers) stay isolated instead of racing each other. Opt-in because nextest does not run doctests: enable it only where the local gate already uses nextest, so CI reproduces what developers run."
+        type: boolean
+        default: false
       run-coverage:
         description: "Measure test coverage with cargo-llvm-cov"
         type: boolean
@@ -92,9 +96,17 @@ jobs:
         if: inputs.run-clippy
         run: cargo clippy --locked --all-targets ${{ inputs.feature-flags }} -- -D warnings
 
+      - uses: taiki-e/install-action@nextest
+        if: inputs.run-tests && inputs.use-nextest
+
       - name: Run tests
         if: inputs.run-tests
-        run: cargo test --locked ${{ inputs.feature-flags }}
+        run: |
+          if [ "${{ inputs.use-nextest }}" = "true" ]; then
+            cargo nextest run --locked ${{ inputs.feature-flags }}
+          else
+            cargo test --locked ${{ inputs.feature-flags }}
+          fi
 
   publish-check:
     name: Publish Check
@@ -173,7 +185,15 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
+      - uses: taiki-e/install-action@nextest
+        if: inputs.use-nextest
+
       # --fail-under-lines 0 is a pure report; pass coverage-threshold to gate.
+      #
+      # The runner has to match the check job's: coverage re-runs the whole
+      # suite, so a suite that only holds together under nextest's
+      # process-per-test isolation would fail here for reasons that have
+      # nothing to do with coverage.
       - name: Measure coverage
         env:
           IGNORE_REGEX: ${{ inputs.coverage-ignore-regex }}
@@ -182,7 +202,11 @@ jobs:
           if [ -n "$IGNORE_REGEX" ]; then
             ignore="--ignore-filename-regex $IGNORE_REGEX"
           fi
-          cargo llvm-cov --locked ${{ inputs.feature-flags }} $ignore \
+          runner=""
+          if [ "${{ inputs.use-nextest }}" = "true" ]; then
+            runner="nextest"
+          fi
+          cargo llvm-cov $runner --locked ${{ inputs.feature-flags }} $ignore \
             --fail-under-lines ${{ inputs.coverage-threshold }} \
             --summary-only
 
