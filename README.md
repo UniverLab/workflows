@@ -29,7 +29,7 @@ This repository centralizes CI/CD logic, reducing duplication across projects. E
 ### Python
 
 **Files:**
-- `.github/workflows/python-ci.yml` — Continuous integration (format, lint, typecheck, test)
+- `.github/workflows/python-ci.yml` — Continuous integration (format, lint, typecheck, test, main-PR version gate)
 - `.github/workflows/python-publish.yml` — Publish to PyPI via trusted publishing
 
 **Consumer usage:** See [Python Integration](#python-integration) below.
@@ -93,6 +93,10 @@ jobs:
   python-ci:
     uses: UniverLab/workflows/.github/workflows/python-ci.yml@main
 ```
+
+On pull requests targeting `main`, the Python CI also requires the version in
+`pyproject.toml` to differ from `origin/main`. Set `main-pr-checks: false` only
+for projects whose version is generated dynamically.
 
 **`.github/workflows/publish.yml`** (~15 lines):
 ```yaml

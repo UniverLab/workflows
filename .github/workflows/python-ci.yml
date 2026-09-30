@@ -35,6 +35,10 @@ on:
         description: "Fail if test coverage drops below this percent (0 = report only)"
         type: number
         default: 0
+      main-pr-checks:
+        description: "Validate version bump on main PR"
+        type: boolean
+        default: true
 
 # CI only reads the checkout — least privilege.
 permissions:
@@ -50,15 +54,14 @@ jobs:
     name: Format, Lint, TypeCheck & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
@@ -93,3 +96,48 @@ jobs:
       - name: Run tests with coverage
         if: inputs.run-tests && inputs.run-coverage
         run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=${{ inputs.coverage-threshold }}
+
+  main-pr-checks:
+    name: Main PR Version Bump
+    if: >-
+      inputs.main-pr-checks &&
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check version bump
+        run: |
+          read_version() {
+            python3 - "$1" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text()
+          sections = re.split(r"(?m)^\[([^]]+)\]\s*$", text)
+          for index in range(1, len(sections), 2):
+              section = sections[index]
+              body = sections[index + 1]
+              if section not in ("project", "tool.poetry"):
+                  continue
+              match = re.search(r"(?m)^\s*version\s*=\s*[\"']([^\"']+)[\"']\s*$", body)
+              if match:
+                  print(match.group(1))
+                  raise SystemExit(0)
+          raise SystemExit("No static version found in [project] or [tool.poetry]")
+          PY
+          }
+
+          CURRENT_VERSION=$(read_version pyproject.toml)
+          git show origin/main:pyproject.toml > "$RUNNER_TEMP/base-pyproject.toml"
+          BASE_VERSION=$(read_version "$RUNNER_TEMP/base-pyproject.toml")
+
+          if [ "$CURRENT_VERSION" = "$BASE_VERSION" ]; then
+            echo "::error::Version in pyproject.toml must be bumped for main PR"
+            exit 1
+          fi
+          echo "Version bumped: $BASE_VERSION -> $CURRENT_VERSION"
