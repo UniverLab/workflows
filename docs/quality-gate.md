@@ -66,3 +66,5 @@ Every third-party action is pinned to a commit SHA (release tag in the
 comment; Dependabot keeps them current), checkouts do not persist the token
 (`persist-credentials: false`), every job has a `timeout-minutes`, and the
 workflow keeps `permissions: contents: read`.
+
+Tests run once, inside the required `Format, Lint & Test` job (coverage included); release binaries are built in the release PR — see `release-build.md`.

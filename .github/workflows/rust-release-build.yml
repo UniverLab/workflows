@@ -1,0 +1,159 @@
+name: Rust Release Build
+
+# The release binaries for every target, built once. Two callers (decided
+# 2026-09-30):
+#   - rust-ci.yml, on a pull request into main: the release is compiled BEFORE
+#     the merge, so a target that fails to build (a macOS-only dependency, a
+#     Windows path) turns the PR red instead of breaking the release after it.
+#   - rust-release.yml, after the merge, only when it cannot reuse the PR's
+#     binaries (main moved, the run expired, or no PR run exists).
+#
+# Artifacts, in the caller's run:
+#   release-meta         meta.json: {bin, tag, tree, sha} — the git tree hash is
+#                        what rust-release.yml compares against the tag's tree
+#                        before it publishes these binaries.
+#   release-pkg-<target> <bin>-<tag>-<target>.tar.gz | .zip
+
+on:
+  workflow_call:
+    inputs:
+      binary-name:
+        description: "Binary name; empty derives the first bin target from cargo metadata"
+        type: string
+        default: ""
+      ref:
+        description: "Git ref to build; empty builds the event's checkout (the PR merge ref in CI)"
+        type: string
+        default: ""
+      system-packages:
+        description: "Space-separated apt packages for the Linux build"
+        type: string
+        default: ""
+      system-packages-brew:
+        description: "Space-separated Homebrew formulae for the macOS builds"
+        type: string
+        default: ""
+      include-windows:
+        description: "Build a native Windows (x86_64-pc-windows-msvc) binary"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      bin: ${{ steps.meta.outputs.bin }}
+      tag: ${{ steps.meta.outputs.tag }}
+      matrix: ${{ steps.meta.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - id: meta
+        env:
+          BIN_INPUT: ${{ inputs.binary-name }}
+          WINDOWS: ${{ inputs.include-windows }}
+        run: |
+          version=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r' | xargs)
+          tag="v${version}"
+          bin="$BIN_INPUT"
+          if [ -z "$bin" ]; then
+            bin=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '[.packages[0].targets[] | select(.kind | index("bin")) | .name][0] // empty')
+          fi
+          [ -n "$bin" ] || { echo "no binary target found"; exit 1; }
+          tree=$(git rev-parse 'HEAD^{tree}')
+          matrix='[{"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","archive":"tar.gz"},{"target":"aarch64-apple-darwin","os":"macos-latest","archive":"tar.gz"},{"target":"x86_64-apple-darwin","os":"macos-latest","archive":"tar.gz"}'
+          if [ "$WINDOWS" = "true" ]; then
+            matrix="${matrix},{\"target\":\"x86_64-pc-windows-msvc\",\"os\":\"windows-latest\",\"archive\":\"zip\"}"
+          fi
+          matrix="${matrix}]"
+          mkdir -p meta
+          jq -n --arg bin "$bin" --arg tag "$tag" --arg tree "$tree" --arg sha "$(git rev-parse HEAD)" \
+            '{bin: $bin, tag: $tag, tree: $tree, sha: $sha}' > meta/meta.json
+          cat meta/meta.json
+          {
+            echo "bin=$bin"
+            echo "tag=$tag"
+            echo "matrix={\"include\":$matrix}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-meta
+          path: meta/meta.json
+          retention-days: 30
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.meta.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install system packages
+        if: runner.os == 'Linux' && inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      # The macOS runners get no build dependencies at all without this. A crate
+      # that needs protoc builds on Linux and fails on darwin — which is exactly
+      # what this job exists to catch before the merge.
+      - name: Install system packages (macOS)
+        if: runner.os == 'macOS' && inputs.system-packages-brew != ''
+        run: brew install ${{ inputs.system-packages-brew }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf "../../../${{ needs.meta.outputs.bin }}-${{ needs.meta.outputs.tag }}-${{ matrix.target }}.tar.gz" ${{ needs.meta.outputs.bin }}
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path ${{ needs.meta.outputs.bin }}.exe -DestinationPath "../../../${{ needs.meta.outputs.bin }}-${{ needs.meta.outputs.tag }}-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-pkg-${{ matrix.target }}
+          path: ${{ needs.meta.outputs.bin }}-${{ needs.meta.outputs.tag }}-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 30

@@ -19,9 +19,16 @@ on:
         description: "Build and release a native Windows (x86_64-pc-windows-msvc) binary"
         type: boolean
         default: true
+      ci-workflow:
+        description: "File name of the repo's CI workflow whose pull-request run built the release binaries (rust-ci.yml's release-build)"
+        type: string
+        default: ci.yml
 
 permissions:
   contents: write
+  # Read the release binaries the PR's CI run built (cross-run artifact
+  # download). The caller must grant it too; without it the release rebuilds.
+  actions: read
 
 # Serialize releases per caller repo — never cancel a release mid-flight, but
 # don't let two run at once and race on tag/publish.
@@ -76,100 +83,91 @@ jobs:
           git push origin "${{ steps.version.outputs.tag }}"
           echo "created=true" >> $GITHUB_OUTPUT
 
-  build:
-    name: Build ${{ matrix.target }}
+  # Reuse the binaries the pull request's CI run already built and verified
+  # (rust-ci.yml → release-build), but only when they were built from exactly
+  # the tree this tag points at: main can move between the last PR run and the
+  # merge, and a binary of other code must never be published.
+  resolve:
+    name: Reuse PR release build
     needs: create-tag
     if: needs.create-tag.outputs.created == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            archive: tar.gz
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      reuse: ${{ steps.resolve.outputs.reuse }}
     steps:
-      - if: matrix.os == 'windows-latest' && !inputs.include-windows
-        name: Skip Windows build
-        run: |
-          echo "Windows build disabled via include-windows: false — skipping"
-          exit 0
-        shell: bash
-
-      - uses: actions/checkout@v4
-        if: matrix.os != 'windows-latest' || inputs.include-windows
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.create-tag.outputs.tag }}
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.os != 'windows-latest' || inputs.include-windows
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install system packages
-        if: (matrix.os != 'windows-latest' || inputs.include-windows) && runner.os == 'Linux' && inputs.system-packages != ''
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TAG: ${{ needs.create-tag.outputs.tag }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ inputs.system-packages }}
+          reuse=false
+          finish() { echo "reuse=$reuse" >> "$GITHUB_OUTPUT"; echo "reuse=$reuse — $1"; exit 0; }
+          [ -n "$HEAD_SHA" ] || finish "not a merged pull request (manual dispatch): building"
+          run_id=$(gh run list -R "$REPO" --workflow "$CI_WORKFLOW" --commit "$HEAD_SHA" \
+            --event pull_request --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null)
+          [ -n "$run_id" ] || finish "no successful $CI_WORKFLOW run for $HEAD_SHA: building"
+          gh run download "$run_id" -R "$REPO" -n release-meta -D meta 2>/dev/null \
+            || finish "run $run_id has no release-meta (or actions: read is missing): building"
+          want_tree=$(git rev-parse "HEAD^{tree}")
+          got_tree=$(jq -r .tree meta/meta.json)
+          got_tag=$(jq -r .tag meta/meta.json)
+          [ "$got_tag" = "$TAG" ] || finish "PR built $got_tag, releasing $TAG: building"
+          [ "$got_tree" = "$want_tree" ] || finish "PR tree $got_tree != tag tree $want_tree (main moved): building"
+          gh run download "$run_id" -R "$REPO" -p 'release-pkg-*' -D pkgs \
+            || finish "could not download the packages of run $run_id: building"
+          ls -la pkgs/*/
+          reuse=true
+          echo "run=$run_id" >> "$GITHUB_OUTPUT"
+          finish "reusing the binaries built by run $run_id (tree $want_tree)"
 
-      # The macOS runners get no build dependencies at all without this. A crate
-      # that needs protoc builds on Linux and fails on darwin, and only at
-      # release time, since CI itself is Linux-only.
-      - name: Install system packages (macOS)
-        if: (matrix.os != 'windows-latest' || inputs.include-windows) && runner.os == 'macOS' && inputs.system-packages-brew != ''
-        run: brew install ${{ inputs.system-packages-brew }}
-
-      - name: Install musl tools
-        if: (matrix.os != 'windows-latest' || inputs.include-windows) && matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - uses: Swatinem/rust-cache@v2
-        if: matrix.os != 'windows-latest' || inputs.include-windows
+      # Re-home the reused packages in this run under the names the build job
+      # would have used, so the release job reads one artifact set either way.
+      - name: Re-upload reused packages
+        if: steps.resolve.outputs.reuse == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          cache-on-failure: true
+          name: release-pkg-reused
+          path: pkgs/*/*
+          if-no-files-found: error
 
-      - name: Build
-        if: matrix.os != 'windows-latest' || inputs.include-windows
-        run: cargo build --locked --release --target ${{ matrix.target }}
-
-      - name: Package (unix)
-        if: (matrix.os != 'windows-latest' || inputs.include-windows) && matrix.archive == 'tar.gz'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf "../../../${{ inputs.binary-name }}-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.tar.gz" ${{ inputs.binary-name }}
-
-      - name: Package (windows)
-        if: inputs.include-windows && matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive -Path ${{ inputs.binary-name }}.exe -DestinationPath "../../../${{ inputs.binary-name }}-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.zip"
-
-      - name: Upload artifact
-        if: matrix.os != 'windows-latest' || inputs.include-windows
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.binary-name }}-${{ matrix.target }}
-          path: ${{ inputs.binary-name }}-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.*
+  build:
+    name: Build
+    needs: [create-tag, resolve]
+    if: needs.create-tag.outputs.created == 'true' && needs.resolve.outputs.reuse != 'true'
+    uses: UniverLab/workflows/.github/workflows/rust-release-build.yml@main
+    with:
+      binary-name: ${{ inputs.binary-name }}
+      ref: ${{ needs.create-tag.outputs.tag }}
+      system-packages: ${{ inputs.system-packages }}
+      system-packages-brew: ${{ inputs.system-packages-brew }}
+      include-windows: ${{ inputs.include-windows }}
 
   github-release:
     name: Create GitHub Release
-    needs: [create-tag, build]
+    needs: [create-tag, resolve, build]
+    if: >-
+      always() &&
+      needs.create-tag.outputs.created == 'true' &&
+      (needs.resolve.outputs.reuse == 'true' || needs.build.result == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-pkg-*
           path: artifacts
           merge-multiple: true
 
@@ -185,15 +183,6 @@ jobs:
           tag_name: ${{ needs.create-tag.outputs.tag }}
           generate_release_notes: true
           files: artifacts/*
-
-  approve:
-    name: Awaiting Manual Approval
-    needs: github-release
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-    steps:
-      - run: echo "Release approved for publishing to crates.io"
 
   ensure-owners:
     name: Ensure crates.io owners
@@ -217,9 +206,12 @@ jobs:
           fi
           cargo owner --token "$TOKEN" --add github:univerlab:owners ${{ inputs.binary-name }} || true
 
+  # No manual approval (decided 2026-09-30): the release PR already carried
+  # every gate, including the release build itself; publishing follows the
+  # GitHub release automatically.
   publish:
     name: Publish to crates.io
-    needs: [create-tag, approve, ensure-owners]
+    needs: [create-tag, github-release, ensure-owners]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
