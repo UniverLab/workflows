@@ -51,6 +51,50 @@ on:
         description: "Fail if line coverage drops below this percent (0 = report only)"
         type: number
         default: 80
+      run-quality:
+        description: "Run the lab's quality gate (scripts/rust-quality.sh in UniverLab/workflows): file size, strict clippy size/complexity lints, cargo-deny, cargo-machete. On by default — strict for every crate, decided 2026-09-29. Relax a threshold below instead of turning the gate off."
+        type: boolean
+        default: true
+      quality-max-file-lines:
+        description: "Maximum lines per src/**/*.rs file (tests exempt)"
+        type: number
+        default: 800
+      quality-fn-lines:
+        description: "clippy too-many-lines-threshold (lines per function)"
+        type: number
+        default: 100
+      quality-cognitive:
+        description: "clippy cognitive-complexity-threshold"
+        type: number
+        default: 25
+      quality-nesting:
+        description: "clippy excessive-nesting-threshold"
+        type: number
+        default: 5
+      quality-args:
+        description: "clippy too-many-arguments-threshold"
+        type: number
+        default: 7
+      quality-type-complexity:
+        description: "clippy type-complexity-threshold"
+        type: number
+        default: 250
+      run-deny:
+        description: "Run cargo-deny (advisories, bans, licenses, sources) inside the quality gate. Uses the crate's deny.toml, else config/deny.toml from UniverLab/workflows."
+        type: boolean
+        default: true
+      run-machete:
+        description: "Run cargo-machete (unused dependencies) inside the quality gate"
+        type: boolean
+        default: true
+      run-mutants:
+        description: "On pull requests, run cargo-mutants on the PR's Rust diff; any missed or timed-out mutant fails. A mutant that survives is a line no test would notice breaking."
+        type: boolean
+        default: true
+      mutants-jobs:
+        description: "Parallel cargo-mutants jobs"
+        type: number
+        default: 2
       main-pr-checks:
         description: "Validate version bump on main PR"
         type: boolean
@@ -70,10 +114,13 @@ jobs:
   check:
     name: Format, Lint & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ inputs.rust-version }}
           components: rustfmt, clippy
@@ -84,7 +131,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ inputs.system-packages }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
 
@@ -96,7 +143,9 @@ jobs:
         if: inputs.run-clippy
         run: cargo clippy --locked --all-targets ${{ inputs.feature-flags }} -- -D warnings
 
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: nextest
         if: inputs.run-tests && inputs.use-nextest
 
       - name: Run tests
@@ -112,10 +161,13 @@ jobs:
     name: Publish Check
     if: inputs.publish-check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ inputs.rust-version }}
 
@@ -125,7 +177,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ inputs.system-packages }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
 
@@ -165,10 +217,13 @@ jobs:
     name: Coverage
     if: inputs.run-coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ inputs.rust-version }}
           components: llvm-tools-preview
@@ -179,13 +234,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ inputs.system-packages }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
 
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-llvm-cov
 
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: nextest
         if: inputs.use-nextest
 
       # --fail-under-lines 0 is a pure report; pass coverage-threshold to gate.
@@ -210,6 +269,115 @@ jobs:
             --fail-under-lines ${{ inputs.coverage-threshold }} \
             --summary-only
 
+  quality:
+    name: Quality Gate
+    if: inputs.run-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The gate's single definition lives in this repo; the quality graph runs
+      # the same script locally.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: UniverLab/workflows
+          ref: main
+          path: .univerlab-workflows
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+          components: clippy
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny,cargo-machete
+
+      - name: Quality gate
+        env:
+          QUALITY_MAX_FILE_LINES: ${{ inputs.quality-max-file-lines }}
+          QUALITY_FN_LINES: ${{ inputs.quality-fn-lines }}
+          QUALITY_COGNITIVE: ${{ inputs.quality-cognitive }}
+          QUALITY_NESTING: ${{ inputs.quality-nesting }}
+          QUALITY_ARGS: ${{ inputs.quality-args }}
+          QUALITY_TYPE_COMPLEXITY: ${{ inputs.quality-type-complexity }}
+          QUALITY_DENY: ${{ inputs.run-deny && '1' || '0' }}
+          QUALITY_MACHETE: ${{ inputs.run-machete && '1' || '0' }}
+          QUALITY_FEATURES: ${{ inputs.feature-flags }}
+        run: bash .univerlab-workflows/scripts/rust-quality.sh
+
+  mutants:
+    name: Mutation Testing (PR diff)
+    if: >-
+      inputs.run-mutants &&
+      github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: UniverLab/workflows
+          ref: main
+          path: .univerlab-workflows
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ inputs.rust-version }}
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-mutants,nextest
+
+      - name: Mutants on the PR diff
+        env:
+          QUALITY_FILE_SIZE: "0"
+          QUALITY_CLIPPY: "0"
+          QUALITY_DENY: "0"
+          QUALITY_MACHETE: "0"
+          QUALITY_MUTANTS_BASE: ${{ github.event.pull_request.base.sha }}
+          QUALITY_MUTANTS_TEST_TOOL: ${{ inputs.use-nextest && 'nextest' || 'cargo' }}
+          QUALITY_MUTANTS_JOBS: ${{ inputs.mutants-jobs }}
+          QUALITY_FEATURES: ${{ inputs.feature-flags }}
+        run: bash .univerlab-workflows/scripts/rust-quality.sh
+
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-out
+          path: mutants.out
+          if-no-files-found: ignore
+
   main-pr-checks:
     name: Main PR Version Bump
     if: >-
@@ -217,10 +385,12 @@ jobs:
       github.event_name == 'pull_request' &&
       github.base_ref == 'main'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check version bump
         run: |

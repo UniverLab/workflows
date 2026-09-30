@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned third-party actions current: Dependabot proposes the new
+# commit SHA with the release tag in the comment, so pins never go stale.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
