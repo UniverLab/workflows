@@ -184,9 +184,11 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
 
+  # After publish: on a crate's first release the crate does not exist on
+  # crates.io until `publish` creates it, and `cargo owner --add` would fail.
   ensure-owners:
     name: Ensure crates.io owners
-    needs: create-tag
+    needs: [create-tag, publish]
     if: needs.create-tag.outputs.created == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -211,7 +213,7 @@ jobs:
   # GitHub release automatically.
   publish:
     name: Publish to crates.io
-    needs: [create-tag, github-release, ensure-owners]
+    needs: [create-tag, github-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -226,19 +228,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ inputs.system-packages }}
 
-      - name: Check stable version
-        id: version_check
-        run: |
-          VERSION=${{ needs.create-tag.outputs.version }}
-          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "is_stable=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_stable=false" >> $GITHUB_OUTPUT
-            echo "Version $VERSION is prerelease — skipping publish"
-          fi
-
+      # Pre-releases (0.1.0-beta.4) are published too: it claims the crate name
+      # from the first beta, and Cargo never selects a pre-release unless the
+      # user asks for it by exact version (dependencies and `cargo install`).
       - name: Cargo publish
-        if: steps.version_check.outputs.is_stable == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked --allow-dirty
