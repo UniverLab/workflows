@@ -139,9 +139,35 @@ jobs:
           TEST_TOOL: ${{ inputs.test-tool }}
           FEATURES: ${{ inputs.features }}
         run: |
+          # Memory-capped cgroup around cargo-mutants: a mutant that allocates
+          # without bound (an endless loop pushing into a Vec) is OOM-killed on
+          # its own, and cargo-mutants records its test as failed. Uncapped, it
+          # exhausts the VM and GitHub stops the runner, losing the shard's
+          # whole report (texforge, 2026-09-30/10-01). Falls back to running
+          # uncapped if the cgroup cannot be set up.
+          cg=/sys/fs/cgroup/mutants
+          limit=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) * 1024 * 3 / 4 ))
+          if sudo mkdir -p "$cg" \
+             && echo "$limit" | sudo tee "$cg/memory.max" >/dev/null \
+             && { echo 0 | sudo tee "$cg/memory.swap.max" >/dev/null || true; } \
+             && echo $$ | sudo tee "$cg/cgroup.procs" >/dev/null; then
+            echo "memory cap: $(( limit / 1024 / 1024 )) MiB (cgroup $cg)"
+          else
+            echo "::warning::memory cap unavailable; running cargo-mutants uncapped"
+            cg=""
+          fi
+          set +e
           # shellcheck disable=SC2086
           cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --shard "$SHARD/$SHARDS" \
             --jobs "$JOBS" --test-tool "$TEST_TOOL" --no-shuffle $FEATURES
+          rc=$?
+          if [ -n "$cg" ]; then
+            peak=$(cat "$cg/memory.peak" 2>/dev/null || echo 0)
+            ooms=$(awk '/^oom_kill / {print $2}' "$cg/memory.events" 2>/dev/null)
+            echo "memory peak: $(( peak / 1024 / 1024 )) MiB, OOM kills inside the cap: ${ooms:-0}"
+            echo "shard $SHARD: memory peak $(( peak / 1024 / 1024 )) MiB, OOM kills ${ooms:-0}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $rc
 
       - name: Upload shard output
         if: always()
