@@ -67,6 +67,29 @@ echo "mutants-cloud: ${REPO}@${sha:0:7} (${branch}) → ${url}"
 gh run watch "$run_id" -R "$WF_REPO" --interval 60 --exit-status >/dev/null 2>&1
 code=$?
 
+# Shard jobs that ended without success: "<shard>\t<job id>\t<has artifact>".
+failed_shards() {
+  local artifacts
+  artifacts="$(gh api "repos/${WF_REPO}/actions/runs/${run_id}/artifacts" --jq '.artifacts[].name' 2>/dev/null)"
+  gh run view "$run_id" -R "$WF_REPO" --json jobs \
+    --jq '.jobs[] | select((.name | startswith("Mutants shard")) and .conclusion != "success") | "\(.name | ltrimstr("Mutants shard "))\t\(.databaseId)"' 2>/dev/null |
+    while IFS=$'\t' read -r shard job; do
+      if printf '%s\n' "$artifacts" | grep -qx "mutants-shard-${shard}"; then has=yes; else has=no; fi
+      printf '%s\t%s\t%s\n' "$shard" "$job" "$has"
+    done
+}
+
+# A shard with no artifact was lost to the runner (shutdown, cancellation), not
+# to the code: its mutants were never counted. Rerun the failed jobs once.
+if [ "$code" -ne 0 ] && failed_shards | grep -q $'\tno$'; then
+  echo "mutants-cloud: shard(s) $(failed_shards | awk -F'\t' '$3=="no"{printf "%s ", $1}')lost to the runner; rerunning the failed jobs once"
+  if gh run rerun "$run_id" -R "$WF_REPO" --failed >/dev/null 2>&1; then
+    sleep 20
+    gh run watch "$run_id" -R "$WF_REPO" --interval 60 --exit-status >/dev/null 2>&1
+    code=$?
+  fi
+fi
+
 out="$(git rev-parse --git-dir)/mutants-report"
 rm -rf "$out"; mkdir -p "$out"
 if gh run download "$run_id" -R "$WF_REPO" -n mutants-report -D "$out" >/dev/null 2>&1; then
@@ -75,6 +98,25 @@ if gh run download "$run_id" -R "$WF_REPO" -n mutants-report -D "$out" >/dev/nul
   if [ -s "$out/timeout.txt" ]; then echo; echo "TIMEOUT ($(wc -l < "$out/timeout.txt")):"; head -100 "$out/timeout.txt"; fi
 else
   echo "mutants-cloud: no mutants-report artifact; see ${url}"
+fi
+
+# A failed shard that still uploaded a report but tested nothing had a broken
+# baseline (the unmutated suite failed) or build: its mutants are not in the
+# counts above. Print why, from the shard log, so the fixer can act on it.
+if [ "$code" -ne 0 ]; then
+  failed_shards | while IFS=$'\t' read -r shard job has; do
+    echo
+    if [ "$has" = no ]; then
+      echo "INCOMPLETE: shard ${shard} produced no report even after a rerun (runner lost); its mutants were not tested"
+      continue
+    fi
+    reason="$(gh api "repos/${WF_REPO}/actions/jobs/${job}/logs" 2>/dev/null | sed 's/^[0-9TZ:.-]* //; s/\x1b\[[0-9;]*m//g' |
+      grep -E "Unmutated baseline|unmutated tree|panicked at|^ *(ERROR|error)(\[| |:)|Bad |FAILED" | grep -v '^\s*MISSED' | head -12)"
+    if [ -n "$reason" ]; then
+      echo "INCOMPLETE: shard ${shard} failed outside the mutants (baseline or build); first lines of its log:"
+      printf '%s\n' "$reason"
+    fi
+  done
 fi
 
 if [ "$code" -eq 0 ]; then echo "MUTANTS PASSED"; exit 0; fi
