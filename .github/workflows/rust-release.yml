@@ -124,7 +124,14 @@ jobs:
           [ "$got_tree" = "$want_tree" ] || finish "PR tree $got_tree != tag tree $want_tree (main moved): building"
           gh run download "$run_id" -R "$REPO" -p 'release-pkg-*' -D pkgs \
             || finish "could not download the packages of run $run_id: building"
-          ls -la pkgs/*/
+          # `gh run download` nests each artifact in its own folder
+          # (pkgs/release-pkg-<target>/…). Flatten them so the re-upload holds
+          # plain files, exactly like the build job's artifacts: uploading
+          # pkgs/*/* would keep those folders, and the release job's
+          # checksum step would find directories instead of packages.
+          mkdir flat
+          find pkgs -type f -exec cp -t flat {} +
+          ls -la flat
           reuse=true
           echo "run=$run_id" >> "$GITHUB_OUTPUT"
           finish "reusing the binaries built by run $run_id (tree $want_tree)"
@@ -136,7 +143,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-pkg-reused
-          path: pkgs/*/*
+          path: flat/*
           if-no-files-found: error
 
   build:
