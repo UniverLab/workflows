@@ -196,7 +196,8 @@ jobs:
   ensure-owners:
     name: Ensure crates.io owners
     needs: [create-tag, publish]
-    if: needs.create-tag.outputs.created == 'true'
+    # always(): see `publish` — a skipped `build` upstream would skip this too.
+    if: always() && needs.create-tag.outputs.created == 'true' && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -221,6 +222,10 @@ jobs:
   publish:
     name: Publish to crates.io
     needs: [create-tag, github-release]
+    # always() + an explicit result check: when the PR build is reused, `build`
+    # is skipped, and the implicit success() skips every job downstream of it —
+    # the GitHub release went out but crates.io never got the version.
+    if: always() && needs.github-release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
