@@ -214,7 +214,12 @@ jobs:
             echo "No CARGO_REGISTRY_TOKEN — skipping owners update"
             exit 0
           fi
-          cargo owner --token "$TOKEN" --add github:univerlab:owners ${{ inputs.binary-name }} || true
+          # No crate argument: cargo reads the package name from Cargo.toml.
+          # binary-name is not the crate name (demostage ships `demo` from
+          # crate `demo-stage`), so passing it targeted someone else's crate.
+          if ! cargo owner --token "$TOKEN" --add github:univerlab:owners; then
+            echo "::warning title=crates.io owners::could not add github:univerlab:owners; check that the crates.io GitHub app has access to the UniverLab org"
+          fi
 
   # No manual approval (decided 2026-09-30): the release PR already carried
   # every gate, including the release build itself; publishing follows the
