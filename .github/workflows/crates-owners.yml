@@ -1,0 +1,40 @@
+name: crates.io owners
+
+# Manual backfill: adds the UniverLab owners team to already-published crates.
+# Releases add it to the crate they publish (rust-release.yml, ensure-owners);
+# this covers crates released before that step worked.
+on:
+  workflow_dispatch:
+    inputs:
+      crates:
+        description: "Space-separated crate names (as published on crates.io)"
+        required: true
+        default: "gitkit demo-stage cadspec ghscaff texforge"
+
+permissions:
+  contents: read
+
+jobs:
+  add-team:
+    name: Add github:univerlab:owners
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add team owner to each crate
+        env:
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CRATES: ${{ inputs.crates }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not available to this repository"
+            exit 1
+          fi
+          failed=0
+          for crate in $CRATES; do
+            if cargo owner --token "$TOKEN" --add github:univerlab:owners "$crate"; then
+              echo "added team to $crate"
+            else
+              echo "::error title=$crate::could not add github:univerlab:owners"
+              failed=1
+            fi
+          done
+          exit $failed
