@@ -63,7 +63,8 @@ specs and polls it; nothing runs it on a PR or a schedule.
 ## Hardening applied to rust-ci.yml
 
 Every third-party action is pinned to a commit SHA (release tag in the
-comment; Dependabot keeps them current), checkouts do not persist the token
+comment; pins are bumped by hand, and Dependabot security updates open a PR
+only when an advisory hits a pinned action), checkouts do not persist the token
 (`persist-credentials: false`), every job has a `timeout-minutes`, and the
 workflow keeps `permissions: contents: read`.
 
