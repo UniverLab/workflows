@@ -22,7 +22,8 @@ This repository centralizes CI/CD logic, reducing duplication across projects. E
 
 **Files:**
 - `.github/workflows/rust-ci.yml` — Continuous integration (format, lint, test, publish checks)
-- `.github/workflows/rust-release.yml` — Release automation (tag, build, publish, crates.io)
+- `.github/workflows/rust-release-manual.yml` — Trunk-based release, run by hand on main: version-bump check, build, crates.io publish behind the `production` environment's approval with Trusted Publishing (no token), then tag and GitHub release
+- `.github/workflows/rust-release.yml` — Legacy release on merge of a version-bump PR into main (develop/main flow); repos move off it as they migrate to trunk-based
 
 **Consumer usage:** See [Integration Guide](#integration-guide) below.
 
@@ -75,6 +76,34 @@ jobs:
 ```
 
 **Setup secrets:** Each repo needs `CARGO_REGISTRY_TOKEN` configured (GitHub Settings → Secrets). The `secrets: inherit` passes it to the workflow.
+
+### Trunk-based release (rust-release-manual.yml)
+
+**`.github/workflows/release.yml`**:
+```yaml
+name: Release
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml   # ci.yml also needs `on: workflow_call`
+    secrets: inherit
+  release:
+    needs: ci
+    uses: UniverLab/workflows/.github/workflows/rust-release-manual.yml@main
+    with:
+      binary-name: texforge
+```
+
+**Setup, once per repo:**
+- A `production` environment with the owner as required reviewer and a deployment branch policy of `main` only.
+- On crates.io, the crate's Settings → Trusted Publishing → GitHub: owner `UniverLab`, the repo, workflow `release.yml` (the caller's file: crates.io matches the top-level workflow), environment `production`.
+- No `CARGO_REGISTRY_TOKEN` is needed.
 
 ### Same pattern for: gitkit, ghscaff
 

@@ -37,6 +37,14 @@ on:
         description: "Build a native Windows (x86_64-pc-windows-msvc) binary"
         type: boolean
         default: true
+      linux-target:
+        description: "Linux target triple. The default is a static musl binary; a crate that loads a glibc-only native library (canopy's ONNX Runtime) passes x86_64-unknown-linux-gnu"
+        type: string
+        default: x86_64-unknown-linux-musl
+      features:
+        description: "Cargo features for every release build (comma-separated); empty builds the default features"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -63,6 +71,7 @@ jobs:
         env:
           BIN_INPUT: ${{ inputs.binary-name }}
           WINDOWS: ${{ inputs.include-windows }}
+          LINUX_TARGET: ${{ inputs.linux-target }}
         run: |
           version=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r' | xargs)
           tag="v${version}"
@@ -73,7 +82,7 @@ jobs:
           fi
           [ -n "$bin" ] || { echo "no binary target found"; exit 1; }
           tree=$(git rev-parse 'HEAD^{tree}')
-          matrix='[{"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","archive":"tar.gz"},{"target":"aarch64-apple-darwin","os":"macos-latest","archive":"tar.gz"},{"target":"x86_64-apple-darwin","os":"macos-latest","archive":"tar.gz"}'
+          matrix='[{"target":"'"$LINUX_TARGET"'","os":"ubuntu-latest","archive":"tar.gz"},{"target":"aarch64-apple-darwin","os":"macos-latest","archive":"tar.gz"},{"target":"x86_64-apple-darwin","os":"macos-latest","archive":"tar.gz"}'
           if [ "$WINDOWS" = "true" ]; then
             matrix="${matrix},{\"target\":\"x86_64-pc-windows-msvc\",\"os\":\"windows-latest\",\"archive\":\"zip\"}"
           fi
@@ -136,7 +145,9 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          FEATURES: ${{ inputs.features }}
+        run: cargo build --locked --release --target ${{ matrix.target }} ${FEATURES:+--features "$FEATURES"}
 
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'

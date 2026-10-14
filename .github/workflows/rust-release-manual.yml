@@ -1,0 +1,181 @@
+name: Rust Release (manual)
+
+# Trunk-based release (decided 2026-10-14, Intelligence 10eadef1). Changes land
+# on main through PRs and nothing releases on merge. A release is the caller's
+# workflow run by hand on main:
+#
+#   version  - refuses unless Cargo.toml carries a version with no tag yet
+#   build    - release binaries for every target (rust-release-build.yml)
+#   publish  - crates.io, in the caller's `production` environment: it waits
+#              for an admin's approval and only accepts main. Trusted
+#              Publishing (OIDC): no registry token is stored anywhere.
+#   release  - tag + GitHub release, only after the crate is published, so a
+#              tag always names something that really shipped.
+#
+# The caller runs its own CI first and passes `needs: ci` (its CI ran on each PR
+# alone; main is where merged PRs meet). Caller sketch:
+#
+#   on: workflow_dispatch
+#   permissions: { contents: write, id-token: write }
+#   jobs:
+#     ci: { uses: ./.github/workflows/ci.yml, secrets: inherit }
+#     release:
+#       needs: ci
+#       uses: UniverLab/workflows/.github/workflows/rust-release-manual.yml@main
+#       with: { binary-name: <bin> }
+#
+# crates.io setup, once per crate (Settings -> Trusted Publishing -> GitHub):
+# owner UniverLab, the repo, workflow file = the CALLER's file name (crates.io
+# matches the top-level workflow_ref, e.g. release.yml), environment production.
+
+on:
+  workflow_call:
+    inputs:
+      binary-name:
+        description: "Binary name (e.g. canopy, texforge)"
+        type: string
+        required: true
+      system-packages:
+        description: "Space-separated apt packages for the Linux build and the publish job"
+        type: string
+        default: ""
+      system-packages-brew:
+        description: "Space-separated Homebrew formulae for the macOS builds"
+        type: string
+        default: ""
+      include-windows:
+        description: "Build and release a native Windows (x86_64-pc-windows-msvc) binary"
+        type: boolean
+        default: true
+      linux-target:
+        description: "Linux target triple for the release binary (see rust-release-build.yml)"
+        type: string
+        default: x86_64-unknown-linux-musl
+      features:
+        description: "Cargo features for the release binaries (comma-separated); crates.io always gets the plain crate"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: rust-release-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check Version Bump
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Release from main only
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases run from main only (this run is on ${{ github.ref }})."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r' | xargs)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Check the version was bumped
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "::error::${{ steps.version.outputs.tag }} is already released. Bump the version in Cargo.toml (and Cargo.lock) before releasing."
+            exit 1
+          fi
+
+  build:
+    name: Build
+    needs: version
+    uses: UniverLab/workflows/.github/workflows/rust-release-build.yml@main
+    with:
+      binary-name: ${{ inputs.binary-name }}
+      ref: ${{ github.sha }}
+      system-packages: ${{ inputs.system-packages }}
+      system-packages-brew: ${{ inputs.system-packages-brew }}
+      include-windows: ${{ inputs.include-windows }}
+      linux-target: ${{ inputs.linux-target }}
+      features: ${{ inputs.features }}
+
+  publish:
+    name: Publish to crates.io
+    needs: [version, build]
+    # Waits for an admin's approval; the environment only accepts main.
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      - name: Authenticate with crates.io (trusted publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      # Pre-releases (0.1.0-beta.4) are published too: Cargo never selects a
+      # pre-release unless the user asks for it by exact version.
+      - name: Cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked
+
+  release:
+    name: Tag and GitHub Release
+    needs: [version, build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.version.outputs.tag }}" -m "Release ${{ needs.version.outputs.tag }}"
+          git push origin "${{ needs.version.outputs.tag }}"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-pkg-*
+          path: artifacts
+          merge-multiple: true
+
+      # One checksum file users (and the install scripts) can verify against.
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          files: artifacts/*
