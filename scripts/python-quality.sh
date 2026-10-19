@@ -129,7 +129,11 @@ fi
 # 4 ─ deptry ─────────────────────────────────────────────────────────────────
 if [ "${RUN_DEPTRY}" = "1" ]; then
   section "deptry (unused, missing and transitive dependencies)"
-  if uv run --no-sync --with deptry deptry .; then pass "deptry"; else fail "deptry"; fi
+  # Scanning src/ (not the root) makes deptry read src/<pkg> as first-party in a
+  # src layout instead of reporting the package itself as transitive.
+  scan="."
+  if [ -d src ]; then scan="src"; fi
+  if uv run --no-sync --with deptry deptry "${scan}"; then pass "deptry"; else fail "deptry"; fi
 fi
 
 # 5 ─ pip-audit ──────────────────────────────────────────────────────────────
