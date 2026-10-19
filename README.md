@@ -30,7 +30,7 @@ This repository centralizes CI/CD logic, reducing duplication across projects. E
 ### Python
 
 **Files:**
-- `.github/workflows/python-ci.yml` — Continuous integration (format, lint, typecheck, test, main-PR version gate)
+- `.github/workflows/python-ci.yml` — Continuous integration (format, lint, typecheck, test with an 80 % coverage gate, the strict quality gate, main-PR version gate)
 - `.github/workflows/python-publish.yml` — Publish to PyPI via trusted publishing
 
 **Consumer usage:** See [Python Integration](#python-integration) below.

@@ -28,13 +28,45 @@ on:
         type: boolean
         default: true
       run-coverage:
-        description: "Measure coverage with pytest-cov (repo must depend on pytest-cov)"
+        description: "Measure coverage with pytest-cov (repo must depend on pytest-cov). On by default, as in rust-ci."
         type: boolean
-        default: false
+        default: true
       coverage-threshold:
         description: "Fail if test coverage drops below this percent (0 = report only)"
         type: number
-        default: 0
+        default: 80
+      run-quality:
+        description: "Run the lab's quality gate (scripts/python-quality.sh in UniverLab/workflows): file and function size, strict ruff complexity lints, deptry, pip-audit, licences. On by default, the Python twin of rust-ci's gate. Relax a threshold below instead of turning the gate off."
+        type: boolean
+        default: true
+      quality-max-file-lines:
+        description: "Maximum code lines per src/**/*.py file (tests exempt)"
+        type: number
+        default: 800
+      quality-fn-lines:
+        description: "Maximum lines per function in src/"
+        type: number
+        default: 100
+      quality-complexity:
+        description: "ruff mccabe max-complexity (C901)"
+        type: number
+        default: 15
+      quality-branches:
+        description: "ruff pylint max-branches (PLR0912)"
+        type: number
+        default: 15
+      quality-nesting:
+        description: "ruff pylint max-nested-blocks (PLR1702)"
+        type: number
+        default: 5
+      quality-args:
+        description: "ruff pylint max-args (PLR0913)"
+        type: number
+        default: 7
+      quality-license-ignore:
+        description: "Space-separated distributions whose licence metadata is verified by hand but unreadable. Keep it short and say why in the caller."
+        type: string
+        default: ""
       main-pr-checks:
         description: "Validate version bump on main PR"
         type: boolean
@@ -96,6 +128,55 @@ jobs:
       - name: Run tests with coverage
         if: inputs.run-tests && inputs.run-coverage
         run: uv run pytest -v --cov --cov-report=term-missing --cov-fail-under=${{ inputs.coverage-threshold }}
+
+  quality:
+    name: Quality Gate
+    if: inputs.run-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The gate's single definition lives in this repo; canopy graphs run the
+      # same script locally.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: UniverLab/workflows
+          ref: main
+          path: .univerlab-workflows
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Install system packages
+        if: inputs.system-packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.system-packages }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      - name: Quality gate
+        env:
+          QUALITY_MAX_FILE_LINES: ${{ inputs.quality-max-file-lines }}
+          QUALITY_FN_LINES: ${{ inputs.quality-fn-lines }}
+          QUALITY_COMPLEXITY: ${{ inputs.quality-complexity }}
+          QUALITY_BRANCHES: ${{ inputs.quality-branches }}
+          QUALITY_NESTING: ${{ inputs.quality-nesting }}
+          QUALITY_ARGS: ${{ inputs.quality-args }}
+          QUALITY_LICENSE_IGNORE: ${{ inputs.quality-license-ignore }}
+        run: bash .univerlab-workflows/scripts/python-quality.sh
 
   main-pr-checks:
     name: Main PR Version Bump
