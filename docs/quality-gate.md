@@ -69,3 +69,36 @@ only when an advisory hits a pinned action), checkouts do not persist the token
 workflow keeps `permissions: contents: read`.
 
 Tests run once, inside the required `Format, Lint & Test` job (coverage included); release binaries are built in the release PR — see `release-build.md`.
+
+# Python quality gate
+
+Decided 2026-10-19: Python packages get the same strict gate, on by default in
+`python-ci.yml` (`run-quality: true`, coverage gate at 80 %). One definition,
+two callers: the `quality` job in CI and `scripts/python-quality.sh` run
+locally from the project root after `uv sync --all-extras --frozen`.
+
+| Check | Default | Input to relax it |
+|---|---|---|
+| Code lines per `src/**/*.py` file (blank and comment-only lines do not count) | 800 | `quality-max-file-lines` |
+| Lines per function in `src/` | 100 | `quality-fn-lines` |
+| ruff `C901` mccabe complexity | 15 | `quality-complexity` |
+| ruff `PLR0912` branches | 15 | `quality-branches` |
+| ruff `PLR1702` nested blocks | 5 | `quality-nesting` |
+| ruff `PLR0913` arguments | 7 | `quality-args` |
+| deptry: unused, missing and transitive dependencies | on | — |
+| pip-audit on the locked set (`uv export`) | on | — |
+| Licences of every installed distribution against the lab allow-list | on | `quality-license-ignore` |
+
+Notes:
+
+- Keep development tools in `[dependency-groups] dev` (PEP 735), not in an
+  `optional-dependencies` extra: deptry reads extras as runtime dependencies
+  and reports pytest, ruff and mypy as unused.
+- The licence allow-list is `config/deny.toml`'s, plus `PSF-2.0`, `MIT-CMU`,
+  `HPND` and the LGPL family: a Python package imports an LGPL library and
+  never links it statically, which is why `deny.toml` bans it for Rust only.
+  A licence outside the list (for example "Free for non-commercial use")
+  fails the gate on purpose; `quality-license-ignore` is only for metadata
+  gaps verified by hand.
+- Local version labels (`torch==2.x+cpu` from the PyTorch index) are audited
+  as their upstream release.
