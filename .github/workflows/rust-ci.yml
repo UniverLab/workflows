@@ -104,9 +104,9 @@ on:
         type: string
         default: ""
       main-pr-checks:
-        description: "Validate version bump on main PR"
+        description: "Deprecated and ignored: the main-PR version-bump gate was removed with the move to trunk-based. Kept so existing callers keep working; drop it from your caller."
         type: boolean
-        default: true
+        default: false
 
 # CI only reads the checkout — least privilege. Release/publish workflows
 # request write where they actually need it.
@@ -297,31 +297,6 @@ jobs:
           QUALITY_MACHETE: ${{ inputs.run-machete && '1' || '0' }}
           QUALITY_FEATURES: ${{ inputs.feature-flags }}
         run: bash .univerlab-workflows/scripts/rust-quality.sh
-
-  main-pr-checks:
-    name: Main PR Version Bump
-    if: >-
-      inputs.main-pr-checks &&
-      github.event_name == 'pull_request' &&
-      github.base_ref == 'main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check version bump
-        run: |
-          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "//' | sed 's/".*//')
-          BASE_VERSION=$(git show origin/main:Cargo.toml | grep '^version' | head -1 | sed 's/version = "//' | sed 's/".*//')
-
-          if [ "$CURRENT_VERSION" = "$BASE_VERSION" ]; then
-            echo "❌ Version in Cargo.toml must be bumped for main PR"
-            exit 1
-          fi
-          echo "✅ Version bumped: $BASE_VERSION → $CURRENT_VERSION"
 
   release-build:
     name: Release build
