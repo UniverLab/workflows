@@ -39,12 +39,24 @@ on:
         description: "Run the lab's quality gate (scripts/python-quality.sh in UniverLab/workflows): file and function size, strict ruff complexity lints, deptry, pip-audit, licences. On by default, the Python twin of rust-ci's gate. Relax a threshold below instead of turning the gate off."
         type: boolean
         default: true
+      quality-src-paths:
+        description: "Space-separated directories or files the gate treats as source, relative to the project root (e.g. 'packages scripts' for a layout without src/). The gate fails when they hold no .py file."
+        type: string
+        default: "src"
+      quality-test-paths:
+        description: "Space-separated directories or files holding tests. test_*.py, *_test.py and conftest.py inside the source paths count as tests too."
+        type: string
+        default: "tests"
       quality-max-file-lines:
-        description: "Maximum code lines per src/**/*.py file (tests exempt)"
+        description: "Maximum code lines per source file"
         type: number
         default: 800
+      quality-max-test-file-lines:
+        description: "Maximum code lines per test file"
+        type: number
+        default: 1500
       quality-fn-lines:
-        description: "Maximum lines per function in src/"
+        description: "Maximum lines per function, source and tests"
         type: number
         default: 100
       quality-complexity:
@@ -169,7 +181,10 @@ jobs:
 
       - name: Quality gate
         env:
+          QUALITY_SRC_PATHS: ${{ inputs.quality-src-paths }}
+          QUALITY_TEST_PATHS: ${{ inputs.quality-test-paths }}
           QUALITY_MAX_FILE_LINES: ${{ inputs.quality-max-file-lines }}
+          QUALITY_MAX_TEST_FILE_LINES: ${{ inputs.quality-max-test-file-lines }}
           QUALITY_FN_LINES: ${{ inputs.quality-fn-lines }}
           QUALITY_COMPLEXITY: ${{ inputs.quality-complexity }}
           QUALITY_BRANCHES: ${{ inputs.quality-branches }}

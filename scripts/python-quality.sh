@@ -8,26 +8,42 @@
 # Run from the project root (where pyproject.toml and uv.lock live), after
 # `uv sync --frozen`. Checks, in order (all run; the exit code is non-zero if
 # any failed):
-#   1. file-size  — no .py file under src/ with more CODE lines than
-#                   QUALITY_MAX_FILE_LINES (blank and comment-only lines do not
-#                   count; tests/ is exempt: test tables are allowed to be long).
-#   2. fn-size    — no function or method under src/ longer than
+#   0. files      — QUALITY_SRC_PATHS (default `src`) must hold at least one
+#                   .py file. A gate that found nothing to check fails instead
+#                   of passing in silence. Test files are those under
+#                   QUALITY_TEST_PATHS (default `tests`) plus any test_*.py,
+#                   *_test.py or conftest.py inside the source paths.
+#   1. file-size  — no source file with more CODE lines than
+#                   QUALITY_MAX_FILE_LINES, and no test file with more than
+#                   QUALITY_MAX_TEST_FILE_LINES (blank and comment-only lines do
+#                   not count). Tests are capped too (decision of 2026-10-22):
+#                   agents load whole files, and a giant test module is a
+#                   context problem even when the code beside it is small.
+#   2. fn-size    — no function or method, in source or tests, longer than
 #                   QUALITY_FN_LINES lines (ruff has no length rule).
-#   3. ruff       — strict complexity lints on src/: C901 (mccabe),
-#                   PLR0912 branches, PLR0913 arguments, PLR1702 nesting, with
-#                   the thresholds below passed on the command line over the
+#   3. ruff       — strict complexity lints: C901 (mccabe), PLR0912 branches,
+#                   PLR1702 nesting on source and tests, PLR0913 arguments on
+#                   source only (pytest injects fixtures as arguments), with the
+#                   thresholds below passed on the command line over the
 #                   project's own ruff config.
 #   4. deptry     — unused, missing and transitive dependencies.
 #   5. audit      — pip-audit on the locked dependency set (uv export).
 #   6. licenses   — every installed distribution carries a licence from the
 #                   lab-wide allow-list (the same list as config/deny.toml).
 #
+# QUALITY_SRC_PATHS and QUALITY_TEST_PATHS are space-separated directories or
+# files relative to the project root, for layouts without src/ (for example
+# `packages scripts` in a registry of packages).
+#
 # Every threshold is an env var so a package can relax one in its own ci.yml
 # (python-ci.yml exposes them as inputs). Defaults mirror the strict Rust
 # ones decided 2026-09-29; complexity uses mccabe, so its number differs.
 set -uo pipefail
 
+SRC_PATHS="${QUALITY_SRC_PATHS:-src}"
+TEST_PATHS="${QUALITY_TEST_PATHS:-tests}"
 MAX_FILE_LINES="${QUALITY_MAX_FILE_LINES:-800}"
+MAX_TEST_FILE_LINES="${QUALITY_MAX_TEST_FILE_LINES:-1500}"
 FN_LINES="${QUALITY_FN_LINES:-100}"
 COMPLEXITY="${QUALITY_COMPLEXITY:-15}"
 BRANCHES="${QUALITY_BRANCHES:-15}"
@@ -56,48 +72,91 @@ if [ ! -f pyproject.toml ]; then
   exit 2
 fi
 
-# 1 ─ file size ──────────────────────────────────────────────────────────────
-if [ "${RUN_FILE_SIZE}" = "1" ] && [ -d src ]; then
-  section "file size (max ${MAX_FILE_LINES} code lines per src/**/*.py)"
-  if python3 - "${MAX_FILE_LINES}" <<'PY'
+# 0 ─ files ──────────────────────────────────────────────────────────────────
+# One walk decides which files are source and which are tests; checks 1–3 read
+# the two lists instead of each globbing src/ on its own.
+SRC_LIST="${WORK}/src.txt"
+TEST_LIST="${WORK}/tests.txt"
+section "files (source: ${SRC_PATHS}; tests: ${TEST_PATHS})"
+if python3 - "${SRC_PATHS}" "${TEST_PATHS}" "${SRC_LIST}" "${TEST_LIST}" <<'PY'
 import pathlib, sys
 
-limit = int(sys.argv[1])
+src_paths, test_paths, src_out, test_out = sys.argv[1:5]
+SKIP = {".venv", "venv", ".git", "__pycache__", "node_modules", "build", "dist", ".tox"}
+
+def walk(spec):
+    files = set()
+    for entry in spec.split():
+        root = pathlib.Path(entry)
+        if root.is_file() and root.suffix == ".py":
+            files.add(root)
+        elif root.is_dir():
+            files.update(f for f in root.rglob("*.py")
+                         if not SKIP.intersection(f.parts))
+    return files
+
+def is_test_name(f):
+    return f.name == "conftest.py" or f.name.startswith("test_") or f.stem.endswith("_test")
+
+tests = walk(test_paths)
+source = set()
+for f in walk(src_paths):
+    (tests if f in tests or is_test_name(f) else source).add(f)
+pathlib.Path(src_out).write_text("".join(f"{f.as_posix()}\n" for f in sorted(source)))
+pathlib.Path(test_out).write_text("".join(f"{f.as_posix()}\n" for f in sorted(tests)))
+print(f"  {len(source)} source files, {len(tests)} test files")
+sys.exit(0 if source else 1)
+PY
+then
+  pass "files"
+else
+  fail "files: no .py file under QUALITY_SRC_PATHS='${SRC_PATHS}' (set quality-src-paths for this layout)"
+fi
+have_src() { [ -s "${SRC_LIST}" ]; }
+have_tests() { [ -s "${TEST_LIST}" ]; }
+
+# 1 ─ file size ──────────────────────────────────────────────────────────────
+if [ "${RUN_FILE_SIZE}" = "1" ] && have_src; then
+  section "file size (max ${MAX_FILE_LINES} code lines per source file, ${MAX_TEST_FILE_LINES} per test file)"
+  if python3 - "${MAX_FILE_LINES}" "${SRC_LIST}" "${MAX_TEST_FILE_LINES}" "${TEST_LIST}" <<'PY'
+import pathlib, sys
+
 over = []
-for f in sorted(pathlib.Path("src").rglob("*.py")):
-    text = f.read_text(encoding="utf-8", errors="replace")
-    lines = text.splitlines()
-    code = sum(1 for l in lines if l.strip() and not l.lstrip().startswith("#"))
-    if code > limit:
-        over.append((code, len(lines), f.as_posix()))
-for code, total, f in over:
-    print(f"  {code:6d} code lines ({total} total)  {f}")
+for limit, listing, kind in ((sys.argv[1], sys.argv[2], "source"), (sys.argv[3], sys.argv[4], "test")):
+    for name in pathlib.Path(listing).read_text().split():
+        lines = pathlib.Path(name).read_text(encoding="utf-8", errors="replace").splitlines()
+        code = sum(1 for l in lines if l.strip() and not l.lstrip().startswith("#"))
+        if code > int(limit):
+            over.append((code, len(lines), kind, limit, name))
+for code, total, kind, limit, name in over:
+    print(f"  {code:6d} code lines ({total} total, {kind} max {limit})  {name}")
 sys.exit(1 if over else 0)
 PY
   then
     pass "file-size"
   else
-    fail "file-size: code over ${MAX_FILE_LINES} lines (listed above)"
+    fail "file-size: files over their cap (listed above)"
   fi
 fi
 
 # 2 ─ function size ──────────────────────────────────────────────────────────
-if [ "${RUN_FN_SIZE}" = "1" ] && [ -d src ]; then
-  section "function size (max ${FN_LINES} lines per function in src/)"
-  if python3 - "${FN_LINES}" <<'PY'
+if [ "${RUN_FN_SIZE}" = "1" ] && have_src; then
+  section "function size (max ${FN_LINES} lines per function, source and tests)"
+  if python3 - "${FN_LINES}" "${SRC_LIST}" "${TEST_LIST}" <<'PY'
 import ast, pathlib, sys
 
 limit = int(sys.argv[1])
+names = pathlib.Path(sys.argv[2]).read_text().split() + pathlib.Path(sys.argv[3]).read_text().split()
 over = []
-for f in sorted(pathlib.Path("src").rglob("*.py")):
-    tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"), str(f))
+for name in names:
+    tree = ast.parse(pathlib.Path(name).read_text(encoding="utf-8", errors="replace"), name)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # Decorators belong to the function; the docstring counts too.
             start = min([node.lineno] + [d.lineno for d in node.decorator_list])
             length = node.end_lineno - start + 1
             if length > limit:
-                over.append((length, f"{f.as_posix()}:{node.lineno}", node.name))
+                over.append((length, f"{name}:{node.lineno}", node.name))
 for length, where, name in sorted(over, reverse=True):
     print(f"  {length:6d} lines  {where}  {name}")
 sys.exit(1 if over else 0)
@@ -111,15 +170,22 @@ fi
 
 # 3 ─ ruff, strict complexity lints ──────────────────────────────────────────
 # PLR1702 is a preview rule; --preview is scoped to this explicit selection.
-if [ "${RUN_RUFF}" = "1" ] && [ -d src ]; then
-  section "ruff strict (complexity ${COMPLEXITY}, branches ${BRANCHES}, nesting ${NESTING}, args ${ARGS})"
-  if uv run --no-sync ruff check src \
+ruff_strict() {
+  local rules="$1" list="$2"
+  xargs -a "${list}" uv run --no-sync ruff check \
       --preview \
-      --select C901,PLR0912,PLR0913,PLR1702 \
+      --select "${rules}" \
       --config "lint.mccabe.max-complexity = ${COMPLEXITY}" \
       --config "lint.pylint.max-branches = ${BRANCHES}" \
       --config "lint.pylint.max-nested-blocks = ${NESTING}" \
-      --config "lint.pylint.max-args = ${ARGS}"; then
+      --config "lint.pylint.max-args = ${ARGS}"
+}
+if [ "${RUN_RUFF}" = "1" ] && have_src; then
+  section "ruff strict (complexity ${COMPLEXITY}, branches ${BRANCHES}, nesting ${NESTING}, args ${ARGS} on source)"
+  ruff_ok=1
+  ruff_strict C901,PLR0912,PLR0913,PLR1702 "${SRC_LIST}" || ruff_ok=0
+  if have_tests; then ruff_strict C901,PLR0912,PLR1702 "${TEST_LIST}" || ruff_ok=0; fi
+  if [ "${ruff_ok}" = "1" ]; then
     pass "ruff strict"
   else
     fail "ruff strict"
