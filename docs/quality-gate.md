@@ -79,18 +79,28 @@ locally from the project root after `uv sync --all-extras --frozen`.
 
 | Check | Default | Input to relax it |
 |---|---|---|
-| Code lines per `src/**/*.py` file (blank and comment-only lines do not count) | 800 | `quality-max-file-lines` |
-| Lines per function in `src/` | 100 | `quality-fn-lines` |
-| ruff `C901` mccabe complexity | 15 | `quality-complexity` |
-| ruff `PLR0912` branches | 15 | `quality-branches` |
-| ruff `PLR1702` nested blocks | 5 | `quality-nesting` |
-| ruff `PLR0913` arguments | 7 | `quality-args` |
+| Source paths (must hold at least one `.py` file) | `src` | `quality-src-paths` |
+| Test paths (plus `test_*.py`, `*_test.py`, `conftest.py` inside the source paths) | `tests` | `quality-test-paths` |
+| Code lines per source file (blank and comment-only lines do not count) | 800 | `quality-max-file-lines` |
+| Code lines per test file | 1 500 | `quality-max-test-file-lines` |
+| Lines per function, source and tests | 100 | `quality-fn-lines` |
+| ruff `C901` mccabe complexity, source and tests | 15 | `quality-complexity` |
+| ruff `PLR0912` branches, source and tests | 15 | `quality-branches` |
+| ruff `PLR1702` nested blocks, source and tests | 5 | `quality-nesting` |
+| ruff `PLR0913` arguments, source only (pytest injects fixtures as arguments) | 7 | `quality-args` |
 | deptry: unused, missing and transitive dependencies | on | — |
 | pip-audit on the locked set (`uv export`) | on | — |
 | Licences of every installed distribution against the lab allow-list | on | `quality-license-ignore` |
 
 Notes:
 
+- Tests are capped too (decided 2026-10-22). Agents load whole files, so a
+  giant test module is a context problem even when the code beside it is
+  small. Split long test files by topic instead of relaxing the cap.
+- A layout without `src/` sets `quality-src-paths`, for example
+  `packages scripts` in a registry of packages. Before 2026-10-23 the gate
+  skipped its size and complexity checks in silence when `src/` was missing;
+  now it fails and names the input.
 - Keep development tools in `[dependency-groups] dev` (PEP 735), not in an
   `optional-dependencies` extra: deptry reads extras as runtime dependencies
   and reports pytest, ruff and mypy as unused.
