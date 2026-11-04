@@ -82,7 +82,9 @@ jobs:
           fi
           [ -n "$bin" ] || { echo "no binary target found"; exit 1; }
           tree=$(git rev-parse 'HEAD^{tree}')
-          matrix='[{"target":"'"$LINUX_TARGET"'","os":"ubuntu-latest","archive":"tar.gz"},{"target":"aarch64-apple-darwin","os":"macos-latest","archive":"tar.gz"},{"target":"x86_64-apple-darwin","os":"macos-latest","archive":"tar.gz"}'
+          # A glibc target needs at least the builder's glibc to run, so Linux stays
+          # on a pinned image: ubuntu-latest moved to 26.04, which requires glibc 2.43.
+          matrix='[{"target":"'"$LINUX_TARGET"'","os":"ubuntu-24.04","archive":"tar.gz"},{"target":"aarch64-apple-darwin","os":"macos-latest","archive":"tar.gz"},{"target":"x86_64-apple-darwin","os":"macos-latest","archive":"tar.gz"}'
           if [ "$WINDOWS" = "true" ]; then
             matrix="${matrix},{\"target\":\"x86_64-pc-windows-msvc\",\"os\":\"windows-latest\",\"archive\":\"zip\"}"
           fi
