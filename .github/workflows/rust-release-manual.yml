@@ -22,6 +22,7 @@ name: Rust Release (manual)
 #     release:
 #       needs: ci
 #       uses: UniverLab/workflows/.github/workflows/rust-release-manual.yml@main
+#       secrets: inherit   # MINISIGN_SECRET_KEY signs SHA256SUMS.txt
 #       with: { binary-name: <bin> }
 #
 # crates.io setup, once per crate (Settings -> Trusted Publishing -> GitHub):
@@ -30,6 +31,10 @@ name: Rust Release (manual)
 
 on:
   workflow_call:
+    secrets:
+      MINISIGN_SECRET_KEY:
+        description: "Unencrypted minisign secret key that signs SHA256SUMS.txt (org secret; pass it or use secrets: inherit)"
+        required: false
     inputs:
       binary-name:
         description: "Binary name (e.g. canopy, texforge)"
@@ -173,6 +178,27 @@ jobs:
           cd artifacts
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      # Sign the checksum file so install scripts and `<tool> update` can check
+      # that a release came from this workflow (audit F-11). The public key ships
+      # inside each tool and its install script. Without the secret the release
+      # still goes out, unsigned, with a warning.
+      - name: Sign checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          TAG: ${{ needs.version.outputs.tag }}
+          BIN: ${{ inputs.binary-name }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY is not available: SHA256SUMS.txt is not signed"
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          key="$RUNNER_TEMP/minisign.key"
+          ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key" )
+          minisign -S -s "$key" -m artifacts/SHA256SUMS.txt -t "$BIN $TAG"
+          rm -f "$key"
+          minisign -V -P RWRDOZx1ameWKtWCHDVp3YmIsBiJszM2U4SJbCMkZ8/iSkW9Pi1yWzDD -m artifacts/SHA256SUMS.txt
 
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
