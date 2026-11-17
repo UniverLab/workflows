@@ -111,9 +111,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ inputs.system-packages }}
 
+      # The job checks out inputs.ref, which may be untrusted: restore the
+      # cache but never save it, so that ref cannot poison the default
+      # branch's cache (code-scanning actions/cache-poisoning).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          cache-on-failure: true
+          save-if: false
 
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
